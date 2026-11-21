@@ -1,7 +1,7 @@
-// A tiny seeded random generator (mulberry32), so a scene and its screenshot staging
-// are deterministic: the same seed always paints the same picture.
-
-export function mulberry32(seed) {
+// Twin Spots — a tiny seeded random number generator so every decorative
+// detail (stars, petals, pebbles) lands in the same place on every run,
+// which keeps the screenshots deterministic.
+export function makeRng(seed) {
   let a = seed >>> 0;
   return function next() {
     a |= 0;
@@ -12,12 +12,21 @@ export function mulberry32(seed) {
   };
 }
 
-/** A random number in [min, max). */
-export function range(rand, min, max) {
-  return min + rand() * (max - min);
+export function range(rng, min, max) {
+  return min + rng() * (max - min);
 }
 
-/** Pick one item from an array. */
-export function pick(rand, items) {
-  return items[Math.floor(rand() * items.length)];
+export function pick(rng, list) {
+  return list[Math.floor(rng() * list.length)];
+}
+
+export function shuffle(rng, list) {
+  const out = list.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = out[i];
+    out[i] = out[j];
+    out[j] = tmp;
+  }
+  return out;
 }

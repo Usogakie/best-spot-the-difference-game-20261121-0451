@@ -1,173 +1,150 @@
-// The game's state machine: title, playing, level clear, time out, and the final
-// score. It owns the timer, the found set, the score and the hints, and answers
-// every question the renderer and the input handler ask. It never draws anything.
+// Twin Spots — the game's state machine: menu, playing, level done,
+// time up, and victory, plus score, timer, finds, hints and mistakes.
+import {
+  HINT_FLASH_MS,
+  LEVEL_TIME_SECONDS,
+  POINTS_PER_FIND,
+  WRONG_CLICK_TIME_PENALTY,
+} from './config.js';
+import { SCENES } from './differences.js';
 
-import { HINTS_PER_LEVEL, LEVELS, SCORE, HINT_SECONDS, MISS_SECONDS, SPARKLE_SECONDS, BEST_KEY } from './config.js';
-import { diffsOf } from './differences.js';
-import { playClear, playFound, playHint, playMiss, playTimeout } from './audio.js';
-
-export const SCREEN_TITLE = 'title';
-export const SCREEN_PLAY = 'play';
-export const SCREEN_CLEAR = 'clear';
-export const SCREEN_OVER = 'over';
-export const SCREEN_WIN = 'win';
-
-export function loadBest() {
-  try {
-    return Number(window.localStorage.getItem(BEST_KEY)) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-export function saveBest(score) {
-  try {
-    window.localStorage.setItem(BEST_KEY, String(score));
-  } catch {
-    // A browser that refuses storage just forgets the best score.
-  }
-}
-
-export class Game {
+export class TwinSpotsState {
   constructor() {
-    this.screen = SCREEN_TITLE;
+    this.resetAll();
+  }
+
+  resetAll() {
+    this.screen = 'menu';
     this.levelIndex = 0;
-    this.score = 0;
-    this.best = loadBest();
-    this.found = new Set();
-    this.timeLeft = 0;
-    this.hintsLeft = HINTS_PER_LEVEL;
-    this.hint = null; // { diff, until } while a hint pulse is showing
-    this.miss = null; // { x, y, until } while a wrong-click mark shows
-    this.sparkle = null; // { diff, until } while a found ring sparkles
-    this.lastFoundName = '';
+    this.totalScore = 0;
+    this.levelStars = [0, 0, 0];
+    this.levelScores = [0, 0, 0];
     this.levelScore = 0;
-    this.stars = 0;
+    this.found = new Set();
+    this.mistakes = 0;
+    this.hintsUsed = 0;
+    this.timeLeft = LEVEL_TIME_SECONDS;
+    this.message = '';
+    this.messageKind = 'info';
+    this.messageUntil = 0;
+    this.hintSpot = null;
+    this.wrongFlash = null;
+    this.frozen = false;
     this.now = 0;
-    this.newBest = false;
+    this.uiButtons = [];
+    this.levelResult = null;
+    this.menuPreview = 0;
   }
 
-  get level() {
-    return LEVELS[this.levelIndex];
-  }
-
-  get diffs() {
-    return diffsOf(this.level.id);
+  get scene() {
+    return SCENES[this.levelIndex];
   }
 
   get foundCount() {
     return this.found.size;
   }
 
-  get totalDiffs() {
-    return this.diffs.length;
+  get remaining() {
+    return this.scene.differences.length - this.found.size;
   }
 
   startLevel(index) {
     this.levelIndex = index;
-    this.found = new Set();
-    this.timeLeft = this.level.seconds;
-    this.hintsLeft = HINTS_PER_LEVEL;
-    this.hint = null;
-    this.miss = null;
-    this.sparkle = null;
-    this.lastFoundName = '';
     this.levelScore = 0;
-    this.screen = SCREEN_PLAY;
+    this.found = new Set();
+    this.mistakes = 0;
+    this.hintsUsed = 0;
+    this.timeLeft = LEVEL_TIME_SECONDS;
+    this.message = `Find ${this.scene.differences.length} differences!`;
+    this.messageKind = 'info';
+    this.messageUntil = this.now + 4;
+    this.hintSpot = null;
+    this.wrongFlash = null;
+    this.levelResult = null;
+    this.screen = 'playing';
   }
 
-  startGame() {
-    this.score = 0;
-    this.newBest = false;
-    this.startLevel(0);
+  restartLevel() {
+    this.startLevel(this.levelIndex);
   }
 
-  /** Advance the clock by dt seconds; the timer only runs while playing. */
-  tick(dt) {
-    this.now += dt;
-    if (this.screen !== SCREEN_PLAY) return;
-    this.timeLeft -= dt;
-    if (this.hint !== null && this.now >= this.hint.until) this.hint = null;
-    if (this.miss !== null && this.now >= this.miss.until) this.miss = null;
-    if (this.sparkle !== null && this.now >= this.sparkle.until) this.sparkle = null;
-    if (this.timeLeft <= 0) {
-      this.timeLeft = 0;
-      this.screen = SCREEN_OVER;
-      playTimeout();
+  toMenu() {
+    this.resetAll();
+  }
+
+  registerFound(index) {
+    if (this.found.has(index)) return false;
+    this.found.add(index);
+    this.levelScore += POINTS_PER_FIND;
+    const diff = this.scene.differences[index];
+    this.message = `Found: ${diff.label}! +${POINTS_PER_FIND}`;
+    this.messageKind = 'good';
+    this.messageUntil = this.now + 2.5;
+    if (this.found.size === this.scene.differences.length) {
+      this.completeLevel();
     }
-  }
-
-  /** A click inside a panel, in panel coordinates. Returns true when it found one. */
-  tapPanel(x, y) {
-    if (this.screen !== SCREEN_PLAY) return false;
-    for (const diff of this.diffs) {
-      if (this.found.has(diff.id)) continue;
-      const dx = x - diff.x;
-      const dy = y - diff.y;
-      if (dx * dx + dy * dy <= diff.r * diff.r) {
-        this.found.add(diff.id);
-        this.score += SCORE.find;
-        this.levelScore += SCORE.find;
-        this.lastFoundName = diff.name;
-        this.sparkle = { diff, until: this.now + SPARKLE_SECONDS };
-        playFound();
-        if (this.found.size === this.diffs.length) this.clearLevel();
-        return true;
-      }
-    }
-    this.timeLeft = Math.max(0, this.timeLeft - SCORE.wrongClickSeconds);
-    this.miss = { x, y, until: this.now + MISS_SECONDS };
-    playMiss();
-    if (this.timeLeft <= 0) {
-      this.screen = SCREEN_OVER;
-      playTimeout();
-    }
-    return false;
-  }
-
-  clearLevel() {
-    const timeBonus = Math.round(this.timeLeft) * SCORE.timeBonusPerSecond;
-    this.score += timeBonus + SCORE.levelClearBonus;
-    this.levelScore += timeBonus + SCORE.levelClearBonus;
-    const hintBonus = this.hintsLeft * 2;
-    this.stars = this.timeLeft > this.level.seconds * 0.5 && this.hintsLeft >= 2 ? 3
-      : this.timeLeft > this.level.seconds * 0.25 || hintBonus > 0 ? 2 : 1;
-    this.screen = SCREEN_CLEAR;
-    playClear();
-  }
-
-  nextLevel() {
-    if (this.levelIndex + 1 < LEVELS.length) {
-      this.startLevel(this.levelIndex + 1);
-    } else {
-      this.finishGame();
-    }
-  }
-
-  finishGame() {
-    this.screen = SCREEN_WIN;
-    if (this.score > this.best) {
-      this.best = this.score;
-      this.newBest = true;
-      saveBest(this.score);
-    }
-    playClear();
-  }
-
-  useHint() {
-    if (this.screen !== SCREEN_PLAY || this.hintsLeft <= 0) return false;
-    const remaining = this.diffs.filter((d) => !this.found.has(d.id));
-    if (remaining.length === 0) return false;
-    const diff = remaining[Math.floor(Math.random() * remaining.length)];
-    this.hintsLeft -= 1;
-    this.score = Math.max(0, this.score - this.level.hintCost);
-    this.hint = { diff, until: this.now + HINT_SECONDS };
-    playHint();
     return true;
   }
 
-  /** The difference a hint is currently pulsing, or null. */
-  hintedDiff() {
-    return this.hint !== null && this.now < this.hint.until ? this.hint.diff : null;
+  registerMiss(x, y, panel) {
+    this.mistakes += 1;
+    this.timeLeft = Math.max(0, this.timeLeft - WRONG_CLICK_TIME_PENALTY);
+    this.wrongFlash = { x, y, panel, until: this.now + 0.7 };
+    this.message = `Not there! -${WRONG_CLICK_TIME_PENALTY}s`;
+    this.messageKind = 'bad';
+    this.messageUntil = this.now + 2;
+    if (this.timeLeft <= 0) {
+      this.screen = 'timeUp';
+    }
+  }
+
+  useHint() {
+    const next = this.scene.differences.findIndex((d, i) => !this.found.has(i));
+    if (next === -1) return false;
+    const diff = this.scene.differences[next];
+    this.hintSpot = { x: diff.x, y: diff.y, r: diff.r, until: this.now + HINT_FLASH_MS / 1000 };
+    this.hintsUsed += 1;
+    this.message = `Hint: look near the ${diff.label.toLowerCase()}`;
+    this.messageKind = 'info';
+    this.messageUntil = this.now + 2.5;
+    return true;
+  }
+
+  starsForLevel() {
+    if (this.mistakes === 0 && this.hintsUsed === 0 && this.timeLeft >= 60) return 3;
+    if (this.mistakes <= 2 && this.timeLeft >= 20) return 2;
+    return 1;
+  }
+
+  completeLevel() {
+    const timeBonus = Math.round(this.timeLeft);
+    const stars = this.starsForLevel();
+    this.levelScore += timeBonus;
+    this.levelStars[this.levelIndex] = stars;
+    this.levelScores[this.levelIndex] = this.levelScore;
+    this.totalScore += this.levelScore;
+    this.levelResult = { stars, timeBonus, found: this.found.size };
+    this.screen = 'levelDone';
+  }
+
+  nextLevel() {
+    if (this.levelIndex < SCENES.length - 1) {
+      this.startLevel(this.levelIndex + 1);
+    } else {
+      this.screen = 'victory';
+    }
+  }
+
+  tick(dt) {
+    if (this.screen === 'playing' && !this.frozen) {
+      this.timeLeft -= dt;
+      if (this.timeLeft <= 0) {
+        this.timeLeft = 0;
+        this.screen = 'timeUp';
+      }
+    }
+    if (this.hintSpot && this.now > this.hintSpot.until) this.hintSpot = null;
+    if (this.wrongFlash && this.now > this.wrongFlash.until) this.wrongFlash = null;
+    if (this.message && this.now > this.messageUntil) this.message = '';
   }
 }

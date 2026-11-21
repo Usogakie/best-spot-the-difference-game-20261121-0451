@@ -1,52 +1,28 @@
-// Everything on screen: the two picture panels, the markers on the differences
-// found, the timer, the score, the hints, and the title, clear, time-out and win
-// screens. It draws; it decides nothing. The scene pictures are painted once per
-// level onto offscreen canvases and blitted every frame.
+// Twin Spots — everything the player sees: header, the two picture
+// panels, found markers, hint pulse, footer buttons, menu, level-complete,
+// time-up and victory screens. All drawing is immediate-mode canvas.
+import {
+  FIELD_HEIGHT,
+  FIELD_WIDTH,
+  FOOTER_Y,
+  LEVEL_NAMES,
+  LEVEL_TAGLINES,
+  LEVEL_DIFFICULTY,
+  MARKER_RING_COLOR,
+  PANEL_HEIGHT,
+  PANEL_LEFT_X,
+  PANEL_RIGHT_X,
+  PANEL_WIDTH,
+  PANEL_Y,
+} from './config.js';
+import { SCENES } from './differences.js';
+import { drawScene } from './scenes.js';
 
-import { FIELD, LEVELS, PALETTE, PANEL, FONT } from './config.js';
-import { paintScene } from './scenes.js';
-import { SCREEN_CLEAR, SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WIN } from './state.js';
-
-export const BUTTONS = {
-  start: { x: 490, y: 600, w: 300, h: 64, label: 'Start the hunt' },
-  hint: { x: 40, y: 636, w: 180, h: 52, label: 'Hint (H)' },
-  restart: { x: 240, y: 636, w: 180, h: 52, label: 'Restart (R)' },
-  menu: { x: 440, y: 636, w: 180, h: 52, label: 'Menu (M)' },
-  next: { x: 490, y: 462, w: 300, h: 64, label: 'Next level' },
-  retry: { x: 490, y: 462, w: 300, h: 64, label: 'Try again' },
-  again: { x: 490, y: 462, w: 300, h: 64, label: 'Play again' },
-};
-
-function inRect(x, y, rect) {
-  return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
-}
-
-/** Which button, if any, a logical point hits on the game's current screen. */
-export function buttonAt(game, x, y) {
-  const names = game.screen === SCREEN_TITLE ? ['start']
-    : game.screen === SCREEN_PLAY ? ['hint', 'restart', 'menu']
-    : game.screen === SCREEN_CLEAR ? ['next']
-    : game.screen === SCREEN_OVER ? ['retry']
-    : ['again'];
-  for (const name of names) {
-    if (inRect(x, y, BUTTONS[name])) return name;
-  }
-  return null;
-}
-
-/** Which panel, if any, a logical point hits: 'left', 'right', or null. */
-export function panelAt(x, y) {
-  if (y < PANEL.y || y > PANEL.y + PANEL.height) return null;
-  if (x >= PANEL.leftX && x <= PANEL.leftX + PANEL.width) return 'left';
-  if (x >= PANEL.rightX && x <= PANEL.rightX + PANEL.width) return 'right';
-  return null;
-}
-
-/** Panel coordinates for a logical point inside the named panel. */
-export function panelPoint(panel, x, y) {
-  const originX = panel === 'left' ? PANEL.leftX : PANEL.rightX;
-  return { x: x - originX, y: y - PANEL.y };
-}
+const BG = '#141824';
+const PANEL_BORDER = '#2c3550';
+const GOLD = '#ffd23d';
+const INK = '#f4f1de';
+const MUTED = '#9aa5c0';
 
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -58,317 +34,369 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-function ring(ctx, x, y, r, color, width) {
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
+function drawButton(state, ctx, id, x, y, w, h, label, accent) {
+  state.uiButtons.push({ id, x, y, w, h });
+  ctx.fillStyle = accent ? GOLD : '#232a42';
+  roundRect(ctx, x, y, w, h, 10);
+  ctx.fill();
+  ctx.strokeStyle = accent ? '#b8860b' : '#3a4568';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = accent ? '#1a1405' : INK;
+  ctx.font = 'bold 19px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, x + w / 2, y + h / 2 + 1);
+}
+
+function formatTime(seconds) {
+  const s = Math.max(0, Math.ceil(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function starsText(n) {
+  return '★'.repeat(n) + '☆'.repeat(3 - n);
+}
+
+function drawHeader(ctx, state) {
+  ctx.fillStyle = INK;
+  ctx.font = 'bold 30px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('TWIN SPOTS', 20, 46);
+  ctx.fillStyle = GOLD;
+  ctx.font = 'bold 20px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`${state.levelIndex + 1} · ${state.scene.name}`, 640, 34);
+  ctx.fillStyle = MUTED;
+  ctx.font = '16px system-ui, sans-serif';
+  ctx.fillText(state.scene.tagline, 640, 58);
+
+  ctx.textAlign = 'right';
+  ctx.fillStyle = INK;
+  ctx.font = 'bold 22px system-ui, sans-serif';
+  ctx.fillText(`SCORE ${state.totalScore + state.levelScore}`, 1260, 34);
+  const low = state.timeLeft <= 30;
+  ctx.fillStyle = low ? '#ff5a5a' : INK;
+  ctx.font = 'bold 22px system-ui, sans-serif';
+  ctx.fillText(`TIME ${formatTime(state.timeLeft)}`, 1260, 64);
+
+  // Timer bar.
+  const barW = 220;
+  const frac = Math.max(0, state.timeLeft / 180);
+  ctx.fillStyle = '#232a42';
+  roundRect(ctx, 1040, 76, barW, 10, 5);
+  ctx.fill();
+  ctx.fillStyle = low ? '#ff5a5a' : '#7ec850';
+  if (frac > 0) {
+    roundRect(ctx, 1040, 76, barW * frac, 10, 5);
+    ctx.fill();
+  }
+
+  // Found counter.
+  ctx.textAlign = 'left';
+  ctx.fillStyle = INK;
+  ctx.font = 'bold 20px system-ui, sans-serif';
+  const total = state.scene.differences.length;
+  ctx.fillText(`FOUND ${state.foundCount} / ${total}`, 20, 84);
+  for (let i = 0; i < total; i++) {
+    ctx.fillStyle = i < state.foundCount ? GOLD : '#2c3550';
+    ctx.beginPath();
+    ctx.arc(180 + i * 22, 78, 7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawMarkers(ctx, state, panelX, t) {
+  state.scene.differences.forEach((diff, i) => {
+    if (!state.found.has(i)) return;
+    const pulse = 1 + Math.sin(t * 3 + i) * 0.06;
+    ctx.strokeStyle = MARKER_RING_COLOR;
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(panelX + diff.x, PANEL_Y + diff.y, (diff.r + 10) * pulse, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = MARKER_RING_COLOR;
+    ctx.font = 'bold 16px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('✓', panelX + diff.x, PANEL_Y + diff.y - diff.r - 16);
+  });
+}
+
+function drawHint(ctx, state, panelX, t) {
+  const hint = state.hintSpot;
+  if (!hint) return;
+  const pulse = 1 + Math.sin(t * 8) * 0.12;
+  ctx.strokeStyle = '#7ee2ff';
+  ctx.lineWidth = 4;
+  ctx.setLineDash([10, 8]);
   ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.arc(panelX + hint.x, PANEL_Y + hint.y, (hint.r + 14) * pulse, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawWrongFlash(ctx, state, panelX, panel) {
+  const flash = state.wrongFlash;
+  if (!flash || flash.panel !== panel) return;
+  const x = panelX + flash.x;
+  const y = PANEL_Y + flash.y;
+  ctx.strokeStyle = '#ff5a5a';
+  ctx.lineWidth = 5;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x - 12, y - 12);
+  ctx.lineTo(x + 12, y + 12);
+  ctx.moveTo(x + 12, y - 12);
+  ctx.lineTo(x - 12, y + 12);
   ctx.stroke();
 }
 
-function drawButton(ctx, rect, label, enabled) {
-  ctx.fillStyle = enabled ? PALETTE.button : '#3a4358';
-  roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 10);
-  ctx.fill();
-  ctx.fillStyle = enabled ? '#ffffff' : PALETTE.muted;
-  ctx.font = `600 20px ${FONT}`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1);
+function drawPanel(ctx, state, panelIndex, t) {
+  const panelX = panelIndex === 0 ? PANEL_LEFT_X : PANEL_RIGHT_X;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(panelX, PANEL_Y, PANEL_WIDTH, PANEL_HEIGHT);
+  ctx.clip();
+  ctx.translate(panelX, PANEL_Y);
+  drawScene(ctx, state.levelIndex, panelIndex, t);
+  ctx.restore();
+  ctx.strokeStyle = PANEL_BORDER;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(panelX, PANEL_Y, PANEL_WIDTH, PANEL_HEIGHT);
+  drawMarkers(ctx, state, panelX, t);
+  drawHint(ctx, state, panelX, t);
+  drawWrongFlash(ctx, state, panelX, panelIndex);
 }
 
-function stars(ctx, x, y, count) {
-  ctx.font = '44px ' + FONT;
+function drawPanelLabels(ctx) {
+  ctx.fillStyle = MUTED;
+  ctx.font = 'bold 15px system-ui, sans-serif';
   ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  let line = '';
-  for (let i = 0; i < 3; i += 1) line += i < count ? '★' : '☆';
-  ctx.fillStyle = PALETTE.gold;
-  ctx.fillText(line, x, y);
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('— ORIGINAL —', PANEL_LEFT_X + PANEL_WIDTH / 2, 98);
+  ctx.fillText('— CHANGED —', PANEL_RIGHT_X + PANEL_WIDTH / 2, 98);
 }
 
-export class Renderer {
-  constructor(canvas) {
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d');
-    this.levelId = null;
-    this.left = document.createElement('canvas');
-    this.left.width = PANEL.width;
-    this.left.height = PANEL.height;
-    this.right = document.createElement('canvas');
-    this.right.width = PANEL.width;
-    this.right.height = PANEL.height;
-  }
-
-  /** Paint both panels for a level (or repaint the same one). */
-  setLevel(levelId) {
-    if (this.levelId === levelId) return;
-    this.levelId = levelId;
-    paintScene(this.left.getContext('2d'), levelId, 'left');
-    paintScene(this.right.getContext('2d'), levelId, 'right');
-  }
-
-  draw(game, hover) {
-    const ctx = this.ctx;
-    this.setLevel(game.level.id);
-    ctx.clearRect(0, 0, FIELD.width, FIELD.height);
-    ctx.fillStyle = PALETTE.backdrop;
-    ctx.fillRect(0, 0, FIELD.width, FIELD.height);
-
-    this.drawHeader(game);
-    if (game.screen === SCREEN_TITLE) {
-      this.drawPanels(game, true);
-      this.drawTitle(game);
-      return;
-    }
-    this.drawPanels(game, false);
-    this.drawHud(game);
-    if (game.screen === SCREEN_PLAY) {
-      this.drawMarkers(game);
-      this.drawHover(game, hover);
-      this.drawFooter(game);
-    } else if (game.screen === SCREEN_CLEAR) {
-      this.drawMarkers(game);
-      this.drawClear(game);
-    } else if (game.screen === SCREEN_OVER) {
-      this.drawMarkers(game);
-      this.drawOver(game);
-    } else if (game.screen === SCREEN_WIN) {
-      this.drawMarkers(game);
-      this.drawWin(game);
-    }
-  }
-
-  drawHeader(game) {
-    const ctx = this.ctx;
-    ctx.fillStyle = PALETTE.text;
-    ctx.font = `700 34px ${FONT}`;
+function drawFooter(ctx, state) {
+  drawButton(state, ctx, 'hint', 20, FOOTER_Y + 8, 150, 48, 'Hint  (H)');
+  drawButton(state, ctx, 'restart', 190, FOOTER_Y + 8, 170, 48, 'Restart  (R)');
+  drawButton(state, ctx, 'menu', 380, FOOTER_Y + 8, 150, 48, 'Menu  (M)');
+  if (state.message) {
+    ctx.fillStyle =
+      state.messageKind === 'good' ? '#7ec850' : state.messageKind === 'bad' ? '#ff5a5a' : INK;
+    ctx.font = 'bold 20px system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText('🔍 TWIN SPOTS', 40, 48);
-    ctx.font = `400 20px ${FONT}`;
-    ctx.fillStyle = PALETTE.muted;
-    ctx.fillText('Spot the difference — two pictures, one sharp eye', 40, 84);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = PALETTE.text;
-    ctx.font = `700 26px ${FONT}`;
-    ctx.fillText(`Score  ${game.score}`, 1240, 44);
-    ctx.font = `400 18px ${FONT}`;
-    ctx.fillStyle = PALETTE.muted;
-    ctx.fillText(`Best  ${game.best}`, 1240, 78);
-  }
-
-  drawPanels(game, dimmed) {
-    const ctx = this.ctx;
-    ctx.drawImage(this.left, PANEL.leftX, PANEL.y);
-    ctx.drawImage(this.right, PANEL.rightX, PANEL.y);
-    ctx.strokeStyle = PALETTE.panelEdge;
-    ctx.lineWidth = 4;
-    ctx.strokeRect(PANEL.leftX, PANEL.y, PANEL.width, PANEL.height);
-    ctx.strokeRect(PANEL.rightX, PANEL.y, PANEL.width, PANEL.height);
-    // Labels sit inside the panels' bottom corners, over plain ground, so they
-    // never collide with the HUD or with a difference ring.
-    for (const [originX, label] of [[PANEL.leftX, 'ORIGINAL'], [PANEL.rightX, 'CHANGED']]) {
-      ctx.fillStyle = 'rgba(16,21,33,0.75)';
-      roundRect(ctx, originX + 8, PANEL.y + PANEL.height - 36, 108, 28, 6);
-      ctx.fill();
-      ctx.fillStyle = PALETTE.text;
-      ctx.font = `600 16px ${FONT}`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(label, originX + 62, PANEL.y + PANEL.height - 21);
-    }
-    if (dimmed) {
-      ctx.fillStyle = 'rgba(20,26,38,0.55)';
-      ctx.fillRect(0, PANEL.y, FIELD.width, PANEL.height);
-    }
-  }
-
-  drawHud(game) {
-    const ctx = this.ctx;
-    const level = game.level;
-    // One clean row: level name left, timer bar centre, found counter right.
-    ctx.fillStyle = PALETTE.text;
-    ctx.font = `700 24px ${FONT}`;
+    ctx.fillText(state.message, 560, FOOTER_Y + 32);
+  } else {
+    ctx.fillStyle = MUTED;
+    ctx.font = '18px system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(`Level ${game.levelIndex + 1} · ${level.name}`, 40, 112);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = game.foundCount === game.totalDiffs ? PALETTE.green : PALETTE.gold;
-    ctx.font = `700 26px ${FONT}`;
-    ctx.fillText(`Found  ${game.foundCount} / ${game.totalDiffs}`, 1240, 112);
+    ctx.fillText('Click a difference in either picture — H for a hint, R to restart.', 560, FOOTER_Y + 32);
+  }
+}
 
-    // Timer bar.
-    const barX = 500;
-    const barW = 280;
-    const frac = Math.max(0, game.timeLeft / level.seconds);
-    ctx.fillStyle = '#2a3348';
-    roundRect(ctx, barX, 100, barW, 22, 11);
+function dimBackdrop(ctx) {
+  ctx.fillStyle = 'rgba(10, 12, 20, 0.78)';
+  ctx.fillRect(0, 0, FIELD_WIDTH, FIELD_HEIGHT);
+}
+
+function drawMenu(ctx, state, t) {
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  ctx.beginPath();
+  ctx.rect(PANEL_LEFT_X, PANEL_Y, PANEL_WIDTH, PANEL_HEIGHT);
+  ctx.clip();
+  ctx.translate(PANEL_LEFT_X, PANEL_Y);
+  drawScene(ctx, 0, 0, t);
+  ctx.restore();
+  ctx.save();
+  ctx.globalAlpha = 0.55;
+  ctx.beginPath();
+  ctx.rect(PANEL_RIGHT_X, PANEL_Y, PANEL_WIDTH, PANEL_HEIGHT);
+  ctx.clip();
+  ctx.translate(PANEL_RIGHT_X, PANEL_Y);
+  drawScene(ctx, 0, 1, t);
+  ctx.restore();
+  dimBackdrop(ctx);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = GOLD;
+  ctx.font = 'bold 72px system-ui, sans-serif';
+  ctx.fillText('TWIN SPOTS', 640, 150);
+  ctx.fillStyle = INK;
+  ctx.font = '24px system-ui, sans-serif';
+  ctx.fillText('Two pictures. A handful of sneaky differences. Find them all.', 640, 196);
+  ctx.fillStyle = MUTED;
+  ctx.font = '18px system-ui, sans-serif';
+  ctx.fillText('Click a difference in either picture  ·  +100 per find  ·  wrong click −5s  ·  H hint  ·  R restart', 640, 232);
+
+  SCENES.forEach((scene, i) => {
+    const x = 140 + i * 350;
+    const y = 300;
+    ctx.fillStyle = '#1d2438';
+    roundRect(ctx, x, y, 300, 190, 14);
     ctx.fill();
-    ctx.fillStyle = frac > 0.5 ? PALETTE.green : frac > 0.25 ? PALETTE.gold : PALETTE.red;
-    if (frac > 0) {
-      roundRect(ctx, barX, 100, Math.max(22, barW * frac), 22, 11);
-      ctx.fill();
-    }
-    ctx.fillStyle = PALETTE.text;
-    ctx.font = `700 18px ${FONT}`;
-    ctx.textAlign = 'center';
-    ctx.fillText(`${Math.ceil(game.timeLeft)}s`, barX + barW / 2, 112);
-  }
-
-  drawMarkers(game) {
-    const ctx = this.ctx;
-    for (const diff of game.diffs) {
-      if (!game.found.has(diff.id)) continue;
-      for (const originX of [PANEL.leftX, PANEL.rightX]) {
-        ring(ctx, originX + diff.x, PANEL.y + diff.y, diff.r + 4, PALETTE.green, 4);
-        ring(ctx, originX + diff.x, PANEL.y + diff.y, diff.r - 2, 'rgba(88,214,141,0.5)', 2);
-      }
-    }
-    const hinted = game.hintedDiff();
-    if (hinted !== null) {
-      const pulse = 1 + 0.18 * Math.sin(game.now * 9);
-      for (const originX of [PANEL.leftX, PANEL.rightX]) {
-        ring(ctx, originX + hinted.x, PANEL.y + hinted.y, (hinted.r + 6) * pulse, PALETTE.gold, 4);
-      }
-    }
-    if (game.miss !== null && game.now < game.miss.until) {
-      const originX = game.missPanel === 'right' ? PANEL.rightX : PANEL.leftX;
-      const mx = originX + game.miss.x;
-      const my = PANEL.y + game.miss.y;
-      ctx.strokeStyle = PALETTE.red;
-      ctx.lineWidth = 5;
-      ctx.beginPath();
-      ctx.moveTo(mx - 12, my - 12);
-      ctx.lineTo(mx + 12, my + 12);
-      ctx.moveTo(mx + 12, my - 12);
-      ctx.lineTo(mx - 12, my + 12);
-      ctx.stroke();
-    }
-    if (game.sparkle !== null && game.now < game.sparkle.until) {
-      const diff = game.sparkle.diff;
-      for (const originX of [PANEL.leftX, PANEL.rightX]) {
-        ring(ctx, originX + diff.x, PANEL.y + diff.y, diff.r + 10, 'rgba(242,201,76,0.8)', 3);
-      }
-    }
-  }
-
-  drawHover(game, hover) {
-    if (!hover || hover.x < 0) return;
-    const panel = panelAt(hover.x, hover.y);
-    if (panel === null) return;
-    const point = panelPoint(panel, hover.x, hover.y);
-    const ctx = this.ctx;
-    ring(ctx, hover.x, hover.y, 26, 'rgba(255,255,255,0.55)', 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.25)';
-    ctx.beginPath();
-    ctx.arc(hover.x, hover.y, 3, 0, Math.PI * 2);
-    ctx.fill();
-    void point;
-  }
-
-  drawFooter(game) {
-    const ctx = this.ctx;
-    drawButton(ctx, BUTTONS.hint, `Hint (H) · ${game.hintsLeft} left`, game.hintsLeft > 0);
-    drawButton(ctx, BUTTONS.restart, 'Restart (R)', true);
-    drawButton(ctx, BUTTONS.menu, 'Menu (M)', true);
-    ctx.fillStyle = game.lastFoundName ? PALETTE.green : PALETTE.muted;
-    ctx.font = `400 20px ${FONT}`;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    const message = game.lastFoundName
-      ? `✓ ${game.lastFoundName}  ·  +100`
-      : 'Click a difference in either picture. A wrong click costs 5 seconds.';
-    ctx.fillText(message, 660, 662);
-    ctx.fillStyle = PALETTE.muted;
-    ctx.font = `400 16px ${FONT}`;
-    ctx.fillText('H hint (−50) · R restart · M menu', 660, 694);
-  }
-
-  drawOverlayBox(ctx, y, h) {
-    ctx.fillStyle = 'rgba(16,21,33,0.88)';
-    roundRect(ctx, 340, y, 600, h, 16);
-    ctx.fill();
-    ctx.strokeStyle = PALETTE.panelEdge;
+    ctx.strokeStyle = '#3a4568';
     ctx.lineWidth = 2;
-    roundRect(ctx, 340, y, 600, h, 16);
     ctx.stroke();
-  }
-
-  drawTitle(game) {
-    const ctx = this.ctx;
-    this.drawOverlayBox(ctx, 240, 300);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = PALETTE.text;
-    ctx.font = `700 54px ${FONT}`;
-    ctx.textBaseline = 'middle';
-    ctx.fillText('TWIN SPOTS', 640, 300);
-    ctx.fillStyle = PALETTE.muted;
-    ctx.font = `400 22px ${FONT}`;
-    ctx.fillText('Two pictures. A handful of secrets. Find them all before time runs out.', 640, 346);
-    ctx.fillStyle = PALETTE.text;
-    ctx.font = `400 20px ${FONT}`;
-    const lines = LEVELS.map((level, i) => `${i + 1}. ${level.name} — ${level.diffs} differences, ${level.seconds}s`).join('   ');
-    ctx.fillText(lines, 640, 396);
-    ctx.fillStyle = PALETTE.muted;
-    ctx.font = `400 18px ${FONT}`;
-    ctx.fillText('Click a difference in either picture · H for a hint · wrong clicks cost 5 seconds', 640, 440);
-    if (game.best > 0) {
-      ctx.fillStyle = PALETTE.gold;
-      ctx.font = `700 20px ${FONT}`;
-      ctx.fillText(`Best score: ${game.best}`, 640, 478);
+    ctx.fillStyle = GOLD;
+    ctx.font = 'bold 15px system-ui, sans-serif';
+    ctx.fillText(`LEVEL ${i + 1} · ${scene.difficulty.toUpperCase()}`, x + 150, y + 32);
+    ctx.fillStyle = INK;
+    ctx.font = 'bold 26px system-ui, sans-serif';
+    ctx.fillText(scene.name, x + 150, y + 72);
+    ctx.fillStyle = MUTED;
+    ctx.font = '16px system-ui, sans-serif';
+    ctx.fillText(scene.tagline, x + 150, y + 104);
+    ctx.fillStyle = INK;
+    ctx.font = '16px system-ui, sans-serif';
+    ctx.fillText(`${scene.differences.length} differences · 180s`, x + 150, y + 134);
+    if (state.levelStars[i] > 0) {
+      ctx.fillStyle = GOLD;
+      ctx.font = 'bold 22px system-ui, sans-serif';
+      ctx.fillText(starsText(state.levelStars[i]), x + 150, y + 166);
     }
-    drawButton(ctx, BUTTONS.start, 'Start the hunt', true);
-  }
+    state.uiButtons.push({ id: `level-${i}`, x, y, w: 300, h: 190 });
+  });
 
-  drawClear(game) {
-    const ctx = this.ctx;
-    this.drawOverlayBox(ctx, 250, 300);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = PALETTE.green;
-    ctx.font = `700 34px ${FONT}`;
-    ctx.textBaseline = 'middle';
-    ctx.fillText('Level clear!', 640, 308);
-    stars(ctx, 640, 360, game.stars);
-    ctx.fillStyle = PALETTE.text;
-    ctx.font = `400 20px ${FONT}`;
-    ctx.fillText(`Level score ${game.levelScore}  ·  total ${game.score}`, 640, 414);
-    drawButton(ctx, BUTTONS.next, game.levelIndex + 1 < LEVELS.length ? 'Next level' : 'See your score', true);
-  }
+  drawButton(state, ctx, 'start', 490, 540, 300, 60, 'START — LEVEL 1', true);
+  ctx.fillStyle = MUTED;
+  ctx.font = '16px system-ui, sans-serif';
+  ctx.fillText('or press 1, 2 or 3 to jump to a level', 640, 640);
+  ctx.fillText('Best played with mouse + keyboard · works fully offline', 640, 668);
+}
 
-  drawOver(game) {
-    const ctx = this.ctx;
-    this.drawOverlayBox(ctx, 250, 300);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = PALETTE.red;
-    ctx.font = `700 34px ${FONT}`;
-    ctx.textBaseline = 'middle';
-    ctx.fillText("Time's up!", 640, 308);
-    ctx.fillStyle = PALETTE.text;
-    ctx.font = `400 20px ${FONT}`;
-    ctx.fillText(`You found ${game.foundCount} of ${game.totalDiffs} differences · score ${game.score}`, 640, 368);
-    ctx.fillStyle = PALETTE.muted;
-    ctx.font = `400 18px ${FONT}`;
-    ctx.fillText('Press M for the menu', 640, 412);
-    drawButton(ctx, BUTTONS.retry, 'Try again', true);
-  }
+function drawCard(ctx, x, y, w, h) {
+  ctx.fillStyle = 'rgba(10, 12, 20, 0.72)';
+  ctx.fillRect(0, 0, FIELD_WIDTH, FIELD_HEIGHT);
+  ctx.fillStyle = '#1d2438';
+  roundRect(ctx, x, y, w, h, 18);
+  ctx.fill();
+  ctx.strokeStyle = GOLD;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
 
-  drawWin(game) {
-    const ctx = this.ctx;
-    this.drawOverlayBox(ctx, 250, 300);
-    ctx.textAlign = 'center';
-    ctx.fillStyle = PALETTE.gold;
-    ctx.font = `700 34px ${FONT}`;
-    ctx.textBaseline = 'middle';
-    ctx.fillText('You found them all!', 640, 308);
-    ctx.fillStyle = PALETTE.text;
-    ctx.font = `400 22px ${FONT}`;
-    ctx.fillText(`Total score ${game.score}   ·   Best ${game.best}`, 640, 366);
-    if (game.newBest) {
-      ctx.fillStyle = PALETTE.gold;
-      ctx.font = `700 20px ${FONT}`;
-      ctx.fillText('★ New best score! ★', 640, 410);
-    }
-    drawButton(ctx, BUTTONS.again, 'Play again', true);
+function drawLevelDone(ctx, state) {
+  const r = state.levelResult;
+  drawCard(ctx, 360, 170, 560, 440);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = GOLD;
+  ctx.font = 'bold 40px system-ui, sans-serif';
+  ctx.fillText('Level Complete!', 640, 240);
+  ctx.fillStyle = GOLD;
+  ctx.font = 'bold 52px system-ui, sans-serif';
+  ctx.fillText(starsText(r.stars), 640, 310);
+  ctx.fillStyle = INK;
+  ctx.font = '22px system-ui, sans-serif';
+  ctx.fillText(`Found ${r.found} / ${state.scene.differences.length} differences`, 640, 356);
+  ctx.fillText(`Time bonus +${r.timeBonus}  ·  Mistakes ${state.mistakes}  ·  Hints ${state.hintsUsed}`, 640, 392);
+  ctx.fillStyle = GOLD;
+  ctx.font = 'bold 26px system-ui, sans-serif';
+  ctx.fillText(`Level score ${state.levelScore}  ·  Total ${state.totalScore}`, 640, 436);
+  const last = state.levelIndex === SCENES.length - 1;
+  drawButton(state, ctx, 'next', 470, 480, 340, 56, last ? 'SEE RESULTS  (Enter)' : 'NEXT LEVEL  (Enter)', true);
+  drawButton(state, ctx, 'replay', 470, 548, 165, 44, 'Replay');
+  drawButton(state, ctx, 'menu', 645, 548, 165, 44, 'Menu');
+}
+
+function drawTimeUp(ctx, state) {
+  drawCard(ctx, 360, 210, 560, 360);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff5a5a';
+  ctx.font = 'bold 44px system-ui, sans-serif';
+  ctx.fillText("Time's up!", 640, 290);
+  ctx.fillStyle = INK;
+  ctx.font = '22px system-ui, sans-serif';
+  ctx.fillText(`You found ${state.foundCount} of ${state.scene.differences.length} differences.`, 640, 340);
+  ctx.fillText('The last ones were so close — try again!', 640, 376);
+  drawButton(state, ctx, 'retry', 470, 430, 340, 56, 'TRY AGAIN  (R)', true);
+  drawButton(state, ctx, 'menu', 470, 498, 340, 44, 'Back to Menu');
+}
+
+function drawVictory(ctx, state) {
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  ctx.beginPath();
+  ctx.rect(PANEL_LEFT_X, PANEL_Y, PANEL_WIDTH, PANEL_HEIGHT);
+  ctx.clip();
+  ctx.translate(PANEL_LEFT_X, PANEL_Y);
+  drawScene(ctx, 2, 0, 0);
+  ctx.restore();
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  ctx.beginPath();
+  ctx.rect(PANEL_RIGHT_X, PANEL_Y, PANEL_WIDTH, PANEL_HEIGHT);
+  ctx.clip();
+  ctx.translate(PANEL_RIGHT_X, PANEL_Y);
+  drawScene(ctx, 2, 1, 0);
+  ctx.restore();
+  dimBackdrop(ctx);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = GOLD;
+  ctx.font = 'bold 56px system-ui, sans-serif';
+  ctx.fillText('You found them all!', 640, 150);
+  ctx.fillStyle = INK;
+  ctx.font = '26px system-ui, sans-serif';
+  ctx.fillText('Every difference, in every scene. Sharp eyes!', 640, 196);
+
+  ctx.fillStyle = '#1d2438';
+  roundRect(ctx, 380, 240, 520, 300, 18);
+  ctx.fill();
+  ctx.strokeStyle = GOLD;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = GOLD;
+  ctx.font = 'bold 22px system-ui, sans-serif';
+  ctx.fillText('TOTAL SCORE', 640, 286);
+  ctx.fillStyle = INK;
+  ctx.font = 'bold 54px system-ui, sans-serif';
+  ctx.fillText(String(state.totalScore), 640, 348);
+  SCENES.forEach((scene, i) => {
+    ctx.fillStyle = INK;
+    ctx.font = '20px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${i + 1}. ${scene.name}`, 430, 400 + i * 38);
+    ctx.fillStyle = GOLD;
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 20px system-ui, sans-serif';
+    ctx.fillText(`${starsText(state.levelStars[i])}   ${state.levelScores[i]} pts`, 850, 400 + i * 38);
+  });
+
+  drawButton(state, ctx, 'again', 470, 580, 340, 56, 'PLAY AGAIN  (Enter)', true);
+  drawButton(state, ctx, 'menu', 470, 648, 340, 44, 'Back to Menu');
+}
+
+export function draw(ctx, state, t) {
+  state.uiButtons = [];
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, FIELD_WIDTH, FIELD_HEIGHT);
+  if (state.screen === 'menu') {
+    drawMenu(ctx, state, t);
+    return;
+  }
+  if (state.screen === 'victory') {
+    // The victory screen paints its own dimmed harbour backdrop; drawing
+    // the gameplay header under it would show a stale "FOUND 0 / 8".
+    drawVictory(ctx, state);
+    return;
+  }
+  drawHeader(ctx, state);
+  drawPanelLabels(ctx);
+  drawPanel(ctx, state, 0, t);
+  drawPanel(ctx, state, 1, t);
+  if (state.screen === 'playing') {
+    drawFooter(ctx, state);
+  } else if (state.screen === 'levelDone') {
+    drawLevelDone(ctx, state);
+  } else if (state.screen === 'timeUp') {
+    drawTimeUp(ctx, state);
   }
 }
+
+export { LEVEL_NAMES, LEVEL_TAGLINES, LEVEL_DIFFICULTY };
